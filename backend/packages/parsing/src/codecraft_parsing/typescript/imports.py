@@ -16,6 +16,7 @@ from tree_sitter import Node, Tree
 MAX_REFERENCE_TEXT = 120
 _TYPE_ONLY_IMPORT = re.compile(r"^import\s+type(?=\s|\{|\*)")
 _TYPE_ONLY_EXPORT = re.compile(r"^export\s+type(?=\s|\{|\*)")
+_LOW_SURROGATE_ESCAPE = re.compile(r"\\u([dD][c-fC-F][0-9a-fA-F]{2})")
 _ASSET_EXTENSIONS = frozenset(
     {
         ".json",
@@ -296,7 +297,7 @@ def _decode_js_string(value: str) -> str | None:
                 if not digits or not all(c in "0123456789abcdefABCDEF" for c in digits):
                     return None
                 codepoint = int(digits, 16)
-                if codepoint > 0x10FFFF:
+                if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
                     return None
                 out.append(chr(codepoint))
                 index = end + 1
@@ -304,8 +305,17 @@ def _decode_js_string(value: str) -> str | None:
             digits = value[index : index + 4]
             if len(digits) != 4 or not all(c in "0123456789abcdefABCDEF" for c in digits):
                 return None
-            out.append(chr(int(digits, 16)))
+            codepoint = int(digits, 16)
             index += 4
+            if 0xD800 <= codepoint <= 0xDBFF:
+                low = _LOW_SURROGATE_ESCAPE.match(value, index)
+                if low is None:
+                    return None
+                codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (int(low[1], 16) - 0xDC00)
+                index = low.end()
+            elif 0xDC00 <= codepoint <= 0xDFFF:
+                return None
+            out.append(chr(codepoint))
             continue
         out.append(escape)
     return "".join(out)

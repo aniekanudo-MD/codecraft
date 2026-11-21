@@ -396,6 +396,56 @@ def test_asset_alias_uses_the_defining_config_directory(tmp_path: Path) -> None:
     ]
 
 
+def test_asset_alias_uses_only_the_best_pattern(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write(
+        repo / "tsconfig.json",
+        json.dumps(
+            {
+                "compilerOptions": {
+                    "paths": {
+                        "*": ["./fallback/*"],
+                        "theme/*": ["./missing/*", "./first/*", "./second/*"],
+                        "theme/exact.css": ["./exact.css"],
+                    }
+                }
+            }
+        ),
+    )
+    _write(
+        repo / "main.ts",
+        'import "theme/style.css";\nimport "theme/exact.css";\nimport "theme/absent.css";\n',
+    )
+    for path in (
+        "fallback/theme/style.css",
+        "fallback/theme/absent.css",
+        "first/style.css",
+        "first/exact.css",
+        "second/style.css",
+        "exact.css",
+    ):
+        _write(repo / path, "body {}\n")
+
+    result = parse_repository(repo)
+
+    assert {(edge.target, edge.resolution_path) for edge in result.edges} == {
+        ("first/style.css", "path_alias"),
+        ("exact.css", "path_alias"),
+    }
+    assert [(ref.reference, ref.reason) for ref in result.unresolved_references] == [
+        ("theme/absent.css", "path alias matches no configured path")
+    ]
+
+
+def test_generated_marker_after_multiline_block_comment(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write(repo / "main.ts", "/* // heading\n */ /* more */ // @generated\nexport {};\n")
+
+    result = parse_repository(repo)
+
+    assert result.files[0].excluded_reason == "generated file: @generated"
+
+
 def test_generated_marker_must_be_in_a_comment(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _write(
@@ -437,6 +487,43 @@ def test_javascript_string_escapes_are_decoded(tmp_path: Path) -> None:
 
     assert [edge.target for edge in result.edges] == ["src/util.ts"]
     assert result.coverage.resolved == 2
+
+
+def test_javascript_unicode_escapes_resolve_to_the_same_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write(
+        repo / "main.ts",
+        "\n".join(
+            (
+                r'import "./\uD83D\uDE00";',
+                r'import "./\u{1F600}";',
+                'import "./😀";',
+                r'import "./missing-\uD83D\uDE00";',
+                "",
+            )
+        ),
+    )
+    _write(repo / "😀.ts", "export {};\n")
+
+    result = parse_repository(repo)
+
+    assert [edge.target for edge in result.edges] == ["😀.ts"]
+    assert result.coverage.resolved == 3
+    assert [ref.reference for ref in result.unresolved_references] == ["./missing-😀"]
+
+
+def test_unpaired_surrogate_escapes_are_unresolved(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    specifiers = (r"./\uD83D", r"./\uDE00", r"./\uD83D\u0041", r"./\u{D800}")
+    _write(repo / "main.ts", "".join(f'import "{specifier}";\n' for specifier in specifiers))
+
+    result = parse_repository(repo)
+
+    assert [(ref.reference, ref.reason) for ref in result.unresolved_references] == [
+        (f'"{specifier}"', "module specifier cannot be decoded") for specifier in specifiers
+    ]
+    assert not result.edges
+    result.model_dump_json().encode("utf-8")
 
 
 def test_extensionless_asset_reexport_keeps_reexport_kind(tmp_path: Path) -> None:

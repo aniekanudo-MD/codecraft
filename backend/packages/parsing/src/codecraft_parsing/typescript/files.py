@@ -1,6 +1,7 @@
 """Turn shared walked files into TypeScript and JavaScript file records."""
 
 import posixpath
+import re
 
 from codecraft_core.model import (
     AdapterRole,
@@ -13,6 +14,7 @@ from codecraft_core.model import (
 
 from codecraft_parsing.common.walker import WalkedFile, WalkResult
 
+_COMMENT_START = re.compile(r"/[/*]")
 _NOT_SOURCE = "not a TypeScript or JavaScript file"
 _DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
 _GENERATED_MARKERS = (
@@ -125,31 +127,23 @@ def _comment_text(lines: list[str]) -> str:
     for line in lines:
         index = 0
         while index < len(line):
-            if in_block:
-                end = line.find("*/", index)
-                if end == -1:
+            if not in_block:
+                start = _COMMENT_START.search(line, index)
+                if start is None:
+                    break
+                index = start.end()
+                if start[0] == "//":
                     parts.append(line[index:])
-                    index = len(line)
                     break
-                parts.append(line[index:end])
-                in_block = False
-                index = end + 2
-                continue
-            line_comment = line.find("//", index)
-            block_comment = line.find("/*", index)
-            if line_comment == -1 and block_comment == -1:
+
+            end = line.find("*/", index)
+            if end == -1:
+                parts.append(line[index:])
+                in_block = True
                 break
-            if block_comment != -1 and (line_comment == -1 or block_comment < line_comment):
-                end = line.find("*/", block_comment + 2)
-                if end == -1:
-                    parts.append(line[block_comment + 2 :])
-                    in_block = True
-                    break
-                parts.append(line[block_comment + 2 : end])
-                index = end + 2
-            else:
-                parts.append(line[line_comment + 2 :])
-                break
+            parts.append(line[index:end])
+            in_block = False
+            index = end + 2
     return "\n".join(parts)
 
 

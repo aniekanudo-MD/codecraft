@@ -897,23 +897,40 @@ function ensureWithinSize(file, maxFileBytes) {
 }
 
 function aliasMatches(specifier, options) {
-  const paths = options && options.paths;
+  return matchingAlias(specifier, options.paths) !== null;
+}
+
+function matchingAlias(specifier, paths) {
   if (!paths || typeof paths !== 'object') {
-    return false;
+    return null;
   }
-  return Object.keys(paths).some((pattern) => {
+  if (Object.hasOwn(paths, specifier) && !specifier.includes('*')) {
+    return { pattern: specifier, captured: '' };
+  }
+
+  // The compiler chooses the longest wildcard prefix and keeps the first tie.
+  let best = null;
+  let longestPrefix = -1;
+  for (const pattern of Object.keys(paths)) {
     const star = pattern.indexOf('*');
-    if (star === -1) {
-      return specifier === pattern;
+    if (star <= longestPrefix || pattern.includes('*', star + 1)) {
+      continue;
     }
     const prefix = pattern.slice(0, star);
     const suffix = pattern.slice(star + 1);
-    return (
+    if (
       specifier.length >= prefix.length + suffix.length &&
       specifier.startsWith(prefix) &&
       specifier.endsWith(suffix)
-    );
-  });
+    ) {
+      longestPrefix = star;
+      best = {
+        pattern,
+        captured: specifier.slice(star, specifier.length - suffix.length),
+      };
+    }
+  }
+  return best;
 }
 
 function aliasFile(specifier, options, root, configPath) {
@@ -933,10 +950,12 @@ function aliasTouchesDependency(specifier, options, root, configPath) {
 }
 
 function aliasTargets(specifier, options, root, configPath) {
-  const paths = options && options.paths;
-  if (!paths || typeof paths !== 'object') {
+  const paths = options.paths;
+  const match = matchingAlias(specifier, paths);
+  if (match === null) {
     return [];
   }
+  const { pattern, captured } = match;
   const base = typeof options.baseUrl === 'string'
     ? options.baseUrl
     : typeof options.pathsBasePath === 'string'
@@ -944,35 +963,10 @@ function aliasTargets(specifier, options, root, configPath) {
       : configPath === null
         ? root
         : path.dirname(configPath);
-  const targets = [];
-  for (const pattern of Object.keys(paths)) {
-    const star = pattern.indexOf('*');
-    let captured = '';
-    if (star === -1) {
-      if (specifier !== pattern) {
-        continue;
-      }
-    } else {
-      const prefix = pattern.slice(0, star);
-      const suffix = pattern.slice(star + 1);
-      if (
-        specifier.length < prefix.length + suffix.length ||
-        !specifier.startsWith(prefix) ||
-        !specifier.endsWith(suffix)
-      ) {
-        continue;
-      }
-      captured = specifier.slice(prefix.length, specifier.length - suffix.length);
-    }
-    const values = Array.isArray(paths[pattern]) ? paths[pattern] : [paths[pattern]];
-    for (const target of values) {
-      if (typeof target !== 'string') {
-        continue;
-      }
-      targets.push(path.resolve(base, target.replace(/\*/g, captured)));
-    }
-  }
-  return targets;
+  const values = Array.isArray(paths[pattern]) ? paths[pattern] : [paths[pattern]];
+  return values
+    .filter((target) => typeof target === 'string')
+    .map((target) => path.resolve(base, target.replace(/\*/g, captured)));
 }
 
 function stripSuffix(specifier) {
