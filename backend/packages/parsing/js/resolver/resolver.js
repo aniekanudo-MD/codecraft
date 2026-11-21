@@ -966,7 +966,7 @@ function aliasTargets(specifier, options, root, configPath) {
   const values = Array.isArray(paths[pattern]) ? paths[pattern] : [paths[pattern]];
   return values
     .filter((target) => typeof target === 'string')
-    .map((target) => path.resolve(base, target.replace(/\*/g, captured)));
+    .map((target) => path.resolve(base, target.replace(/\*/g, () => captured)));
 }
 
 function stripSuffix(specifier) {

@@ -437,6 +437,23 @@ def test_asset_alias_uses_only_the_best_pattern(tmp_path: Path) -> None:
     ]
 
 
+def test_asset_alias_preserves_literal_dollar_signs(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write(
+        repo / "tsconfig.json",
+        '{"compilerOptions": {"paths": {"theme/*": ["./assets/*"]}}}\n',
+    )
+    _write(repo / "main.ts", 'import "theme/style$$.css";\n')
+    _write(repo / "assets/style$$.css", "body {}\n")
+    _write(repo / "assets/style$.css", "body {}\n")
+
+    result = parse_repository(repo)
+
+    assert [(edge.target, edge.resolution_path) for edge in result.edges] == [
+        ("assets/style$$.css", "path_alias")
+    ]
+
+
 def test_generated_marker_after_multiline_block_comment(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _write(repo / "main.ts", "/* // heading\n */ /* more */ // @generated\nexport {};\n")
