@@ -67,6 +67,12 @@ each `id`, in the same order as the request, with no extra results.
   "protocol_version": 1,
   "typescript_version": "6.0.3",
   "config_files": ["tsconfig.json"],
+  "skipped_workspaces": [
+    {
+      "pattern": "../other",
+      "reason": "workspace path outside the repository"
+    }
+  ],
   "results": [
     {
       "id": "r000001",
@@ -83,6 +89,7 @@ each `id`, in the same order as the request, with no extra results.
 | `protocol_version` | integer | Exactly `1`. |
 | `typescript_version` | string | The version of the installed `typescript` package that produced the results. |
 | `config_files` | array of strings | Every nearest configuration file selected for a source file, repository-relative and sorted. Extended files are not listed separately. |
+| `skipped_workspaces` | array of `{pattern, reason}` | Workspace patterns refused before filesystem access, each with a named reason. |
 | `results` | array | One result per request reference, in request order. |
 | `results[].id` | string | The request's `id`, unchanged. |
 | `results[].resolved_path` | string or null | Repository-relative POSIX path of the resolved file, or null. |

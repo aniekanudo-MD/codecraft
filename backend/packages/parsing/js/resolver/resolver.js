@@ -8,7 +8,6 @@ const path = require('path');
 const ts = require('typescript');
 
 const PROTOCOL_VERSION = 1;
-const CONFIG_NAMES = ['tsconfig.json', 'jsconfig.json'];
 
 class RequestError extends Error {
   constructor(code, message) {
@@ -73,7 +72,7 @@ function handle(request) {
           request.max_file_bytes,
           configCache,
           configFiles,
-          workspaces,
+          workspaces.packages,
         ),
       };
     }
@@ -85,7 +84,7 @@ function handle(request) {
         request.max_file_bytes,
         configCache,
         configFiles,
-        workspaces,
+        workspaces.packages,
       ),
     };
   });
@@ -93,6 +92,7 @@ function handle(request) {
   return {
     typescript_version: ts.version,
     config_files: [...configFiles].sort(),
+    skipped_workspaces: workspaces.skipped,
     results,
   };
 }
@@ -295,23 +295,32 @@ function unresolved(reason) {
 }
 
 function nearestConfig(source, root) {
+  const folders = [];
   let folder = path.dirname(source);
   while (true) {
-    for (const name of CONFIG_NAMES) {
-      const candidate = path.join(folder, name);
-      if (isRealFile(candidate)) {
-        return candidate;
-      }
-    }
+    folders.push(folder);
     if (path.resolve(folder) === path.resolve(root)) {
-      return null;
+      break;
     }
     const parent = path.dirname(folder);
     if (parent === folder || !isInside(root, parent)) {
-      return null;
+      break;
     }
     folder = parent;
   }
+  for (const searchFolder of folders) {
+    const candidate = path.join(searchFolder, 'tsconfig.json');
+    if (isRealFile(candidate)) {
+      return candidate;
+    }
+  }
+  for (const searchFolder of folders) {
+    const candidate = path.join(searchFolder, 'jsconfig.json');
+    if (isRealFile(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 function readWorkspaces(root, maxFileBytes) {
@@ -327,12 +336,31 @@ function readWorkspaces(root, maxFileBytes) {
 
   const folders = new Set();
   const excluded = new Set();
+  const skipped = [];
   for (const pattern of patterns) {
     const trimmed = pattern.trim();
     const negative = trimmed.startsWith('!');
     const target = negative ? trimmed.slice(1) : trimmed;
-    const found = expandWorkspacePattern(root, target);
+    const segments = target
+      .replace(/^\.\//, '')
+      .split('/')
+      .filter((part) => part.length > 0);
+    if (path.isAbsolute(target) || segments.includes('..')) {
+      skipped.push({
+        pattern: trimmed,
+        reason: 'workspace path outside the repository',
+      });
+      continue;
+    }
+    const found = expandWorkspacePattern(root, target, skipped);
     for (const folder of found) {
+      if (!isInside(root, folder)) {
+        skipped.push({
+          pattern: trimmed,
+          reason: 'workspace path outside the repository',
+        });
+        continue;
+      }
       if (negative) {
         excluded.add(folder);
       } else {
@@ -346,13 +374,19 @@ function readWorkspaces(root, maxFileBytes) {
 
   const packages = new Map();
   for (const folder of folders) {
+    if (!isInside(root, folder)) {
+      continue;
+    }
     const manifest = readJsonFile(path.join(folder, 'package.json'), maxFileBytes);
     if (manifest === null || typeof manifest.name !== 'string' || manifest.name.length === 0) {
       continue;
     }
     packages.set(manifest.name, { folder, manifest });
   }
-  return packages;
+  const uniqueSkipped = [
+    ...new Map(skipped.map((entry) => [`${entry.pattern}\0${entry.reason}`, entry])).values(),
+  ];
+  return { packages, skipped: uniqueSkipped };
 }
 
 function addWorkspacePatterns(value, patterns) {
@@ -402,48 +436,79 @@ function readPnpmPatterns(file, maxFileBytes) {
   return patterns;
 }
 
-function expandWorkspacePattern(root, pattern) {
+function expandWorkspacePattern(root, pattern, skipped) {
   const cleaned = pattern.trim().replace(/^\.\//, '');
   if (cleaned.length === 0) {
     return [];
   }
-  return expandWorkspaceSegments(root, cleaned.split('/').filter((part) => part.length > 0));
+  return expandWorkspaceSegments(
+    root,
+    root,
+    cleaned.split('/').filter((part) => part.length > 0),
+    pattern,
+    skipped,
+  );
 }
 
-function expandWorkspaceSegments(base, segments) {
+function expandWorkspaceSegments(root, base, segments, pattern, skipped) {
+  if (!isInside(root, base)) {
+    skipped.push({ pattern, reason: 'workspace path outside the repository' });
+    return [];
+  }
   if (segments.length === 0) {
     return [base];
   }
   const [segment, ...rest] = segments;
   if (segment === '**') {
-    const found = [...expandWorkspaceSegments(base, rest)];
+    const found = [...expandWorkspaceSegments(root, base, rest, pattern, skipped)];
     for (const name of readDirectoryNames(base)) {
       if (isIgnoredWorkspaceName(name)) {
         continue;
       }
       const child = path.join(base, name);
-      if (isDirectory(child) && !isSymbolicLink(child)) {
-        found.push(...expandWorkspaceSegments(child, segments));
+      if (isSymbolicLink(child)) {
+        skipped.push({ pattern, reason: 'symbolic link' });
+        continue;
+      }
+      if (isDirectory(child)) {
+        found.push(...expandWorkspaceSegments(root, child, segments, pattern, skipped));
       }
     }
     return found;
   }
   if (segment.includes('*') || segment.includes('?')) {
-    const pattern = segmentPattern(segment);
+    const segmentRegex = segmentPattern(segment);
     const found = [];
     for (const name of readDirectoryNames(base)) {
       if (isIgnoredWorkspaceName(name)) {
         continue;
       }
       const child = path.join(base, name);
-      if (pattern.test(name) && isDirectory(child) && !isSymbolicLink(child)) {
-        found.push(...expandWorkspaceSegments(child, rest));
+      if (!segmentRegex.test(name)) {
+        continue;
+      }
+      if (isSymbolicLink(child)) {
+        skipped.push({ pattern, reason: 'symbolic link' });
+        continue;
+      }
+      if (isDirectory(child)) {
+        found.push(...expandWorkspaceSegments(root, child, rest, pattern, skipped));
       }
     }
     return found;
   }
   const child = path.join(base, segment);
-  return isDirectory(child) ? expandWorkspaceSegments(child, rest) : [];
+  if (!isInside(root, child)) {
+    skipped.push({ pattern, reason: 'workspace path outside the repository' });
+    return [];
+  }
+  if (isSymbolicLink(child)) {
+    skipped.push({ pattern, reason: 'symbolic link' });
+    return [];
+  }
+  return isDirectory(child)
+    ? expandWorkspaceSegments(root, child, rest, pattern, skipped)
+    : [];
 }
 
 function segmentPattern(segment) {
@@ -504,26 +569,39 @@ function workspaceEntry(match, workspaces) {
   }
   let target = null;
   if (match.subpath.length > 0) {
-    target = exportTarget(pkg.manifest.exports, `./${match.subpath}`, match.subpath);
-    if (target === null) {
-      if (pkg.manifest.exports !== undefined) {
+    if (pkg.manifest.exports !== undefined) {
+      if (!isSubpathExports(pkg.manifest.exports)) {
         return {
           path: null,
           reason: 'workspace package subpath is not exported',
         };
       }
+      target = exportTarget(pkg.manifest.exports, `./${match.subpath}`, match.subpath);
+      if (target === null) {
+        return {
+          path: null,
+          reason: 'workspace package subpath is not exported',
+        };
+      }
+    } else {
       target = match.subpath;
     }
-  } else {
-    target = exportTarget(pkg.manifest.exports, '.', '');
-    if (target === null) {
-      target = firstString(
-        pkg.manifest.types,
-        pkg.manifest.typings,
-        pkg.manifest.main,
-        pkg.manifest.module,
-      );
+  } else if (pkg.manifest.exports !== undefined) {
+    if (isSubpathExports(pkg.manifest.exports)) {
+      if (!Object.prototype.hasOwnProperty.call(pkg.manifest.exports, '.')) {
+        return { path: null, reason: 'workspace package entry not found' };
+      }
+      target = conditionTarget(pkg.manifest.exports['.']);
+    } else {
+      target = conditionTarget(pkg.manifest.exports);
     }
+  } else {
+    target = firstString(
+      pkg.manifest.types,
+      pkg.manifest.typings,
+      pkg.manifest.main,
+      pkg.manifest.module,
+    );
   }
   if (typeof target !== 'string') {
     return { path: null, reason: 'workspace package entry not found' };
@@ -533,6 +611,15 @@ function workspaceEntry(match, workspaces) {
     return { path: null, reason: 'workspace package entry not found' };
   }
   return { path: resolved, reason: null };
+}
+
+function isSubpathExports(value) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).some((key) => key.startsWith('.'))
+  );
 }
 
 function exportTarget(value, key, wildcardValue) {
@@ -777,7 +864,7 @@ function readConfigFile(file, maxFileBytes, workspaces, root) {
     return text;
   }
   const config = parsed.config;
-  rewriteExtends(config, workspaces);
+  rewriteExtends(config, workspaces, root);
   return JSON.stringify(config);
 }
 
@@ -852,9 +939,11 @@ function aliasTargets(specifier, options, root, configPath) {
   }
   const base = typeof options.baseUrl === 'string'
     ? options.baseUrl
-    : configPath === null
-      ? root
-      : path.dirname(configPath);
+    : typeof options.pathsBasePath === 'string'
+      ? options.pathsBasePath
+      : configPath === null
+        ? root
+        : path.dirname(configPath);
   const targets = [];
   for (const pattern of Object.keys(paths)) {
     const star = pattern.indexOf('*');
@@ -887,7 +976,16 @@ function aliasTargets(specifier, options, root, configPath) {
 }
 
 function stripSuffix(specifier) {
-  return specifier.split('?')[0].split('#')[0];
+  let result = specifier;
+  const query = result.indexOf('?');
+  if (query !== -1) {
+    result = result.slice(0, query);
+  }
+  const fragment = result.indexOf('#', 1);
+  if (fragment !== -1) {
+    result = result.slice(0, fragment);
+  }
+  return result;
 }
 
 function resolutionLabel(specifier, resolved, resolvedModule) {

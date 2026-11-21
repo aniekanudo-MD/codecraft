@@ -198,7 +198,20 @@
         "config_files": {
           "type": "array",
           "items": { "type": "string" }
+        },
+        "skipped_workspaces": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/typescript_workspace_skip" }
         }
+      }
+    },
+    "typescript_workspace_skip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "reason"],
+      "properties": {
+        "pattern": { "type": "string" },
+        "reason": { "type": "string" }
       }
     },
     "typescript_coverage_details": {
@@ -313,6 +326,19 @@
               "go": { "type": "null" }
             },
             "required": ["typescript", "python", "go"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "typescript": { "not": { "type": "null" } }
+            },
+            "required": ["typescript"]
+          },
+          "then": {
+            "properties": {
+              "language": { "enum": ["typescript", "javascript"] }
+            }
           }
         }
       ]

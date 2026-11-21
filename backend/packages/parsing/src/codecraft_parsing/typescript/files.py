@@ -111,12 +111,46 @@ def _generated_record(walked: WalkedFile, marker: str) -> FileRecord:
 def _generated_marker(data: bytes | None) -> str | None:
     if data is None:
         return None
-    for line in data.splitlines()[:10]:
-        lowered = line.lower()
-        for marker in _GENERATED_MARKERS:
-            if marker.lower().encode("utf-8") in lowered:
-                return marker
+    text = data.decode("utf-8", errors="replace")
+    comments = _comment_text(text.splitlines()[:10]).lower()
+    for marker in _GENERATED_MARKERS:
+        if marker.lower() in comments:
+            return marker
     return None
+
+
+def _comment_text(lines: list[str]) -> str:
+    parts: list[str] = []
+    in_block = False
+    for line in lines:
+        index = 0
+        while index < len(line):
+            if in_block:
+                end = line.find("*/", index)
+                if end == -1:
+                    parts.append(line[index:])
+                    index = len(line)
+                    break
+                parts.append(line[index:end])
+                in_block = False
+                index = end + 2
+                continue
+            line_comment = line.find("//", index)
+            block_comment = line.find("/*", index)
+            if line_comment == -1 and block_comment == -1:
+                break
+            if block_comment != -1 and (line_comment == -1 or block_comment < line_comment):
+                end = line.find("*/", block_comment + 2)
+                if end == -1:
+                    parts.append(line[block_comment + 2 :])
+                    in_block = True
+                    break
+                parts.append(line[block_comment + 2 : end])
+                index = end + 2
+            else:
+                parts.append(line[line_comment + 2 :])
+                break
+    return "\n".join(parts)
 
 
 def _excluded_record(walked: WalkedFile) -> FileRecord:

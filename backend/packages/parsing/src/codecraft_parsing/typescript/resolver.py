@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from codecraft_core.model import ResolutionPath
+from codecraft_core.model import ResolutionPath, TypeScriptWorkspaceSkip
 
 PROTOCOL_VERSION = 1
 _HELPER = Path(__file__).resolve().parents[3] / "js" / "resolver" / "resolver.js"
@@ -45,6 +45,7 @@ class Resolution:
 class ResolverResponse:
     typescript_version: str
     config_files: tuple[str, ...]
+    skipped_workspaces: tuple[TypeScriptWorkspaceSkip, ...]
     results: dict[str, Resolution]
 
 
@@ -111,14 +112,29 @@ def resolve_references(
 
     typescript_version = document.get("typescript_version")
     config_values = document.get("config_files")
+    skipped_values = document.get("skipped_workspaces")
     raw_results_value = document.get("results")
-    if not isinstance(typescript_version, str) or not isinstance(config_values, list):
+    if (
+        not isinstance(typescript_version, str)
+        or not isinstance(config_values, list)
+        or not isinstance(skipped_values, list)
+    ):
         raise ResolverFailure("js resolver returned an invalid response")
     config_files: list[str] = []
     for value in cast("list[object]", config_values):
         if not isinstance(value, str):
             raise ResolverFailure("js resolver returned an invalid response")
         config_files.append(value)
+    skipped_workspaces: list[TypeScriptWorkspaceSkip] = []
+    for value in cast("list[object]", skipped_values):
+        entry = _object(value)
+        if entry is None:
+            raise ResolverFailure("js resolver returned an invalid response")
+        pattern = entry.get("pattern")
+        reason = entry.get("reason")
+        if not isinstance(pattern, str) or not isinstance(reason, str):
+            raise ResolverFailure("js resolver returned an invalid response")
+        skipped_workspaces.append(TypeScriptWorkspaceSkip(pattern=pattern, reason=reason))
     if not isinstance(raw_results_value, list):
         raise ResolverFailure("js resolver returned an invalid response")
     raw_results = cast("list[object]", raw_results_value)
@@ -165,6 +181,7 @@ def resolve_references(
     return ResolverResponse(
         typescript_version=typescript_version,
         config_files=tuple(config_files),
+        skipped_workspaces=tuple(skipped_workspaces),
         results=results,
     )
 

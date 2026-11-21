@@ -5,7 +5,6 @@ is not an import. Positions are characters, converted from the grammar's byte
 columns.
 """
 
-import json
 import posixpath
 import re
 from dataclasses import dataclass
@@ -112,12 +111,21 @@ def _module_reference(node: Node, source: SourceText) -> RawReference | None:
     source_node = node.child_by_field_name("source")
     if source_node is None:
         return None
+    line, column = source.position(node)
+    text = _node_text(node)
+    type_only = _TYPE_ONLY_IMPORT.match(text.lstrip()) is not None
     specifier = _string_value(source_node)
     if specifier is None:
-        return None
-    line, column = source.position(node)
-    text = source.text[node.start_byte : node.end_byte]
-    type_only = _TYPE_ONLY_IMPORT.match(text.lstrip()) is not None
+        return RawReference(
+            reference=_node_text(source_node),
+            kind=EdgeKind.IMPORT,
+            line=line,
+            column=column,
+            condition=None,
+            asset=False,
+            is_re_export=False,
+            failure_reason="module specifier cannot be decoded",
+        )
     asset = is_asset(specifier)
     return RawReference(
         reference=specifier,
@@ -138,12 +146,21 @@ def _re_export(node: Node, source: SourceText) -> RawReference | None:
     source_node = node.child_by_field_name("source")
     if source_node is None:
         return None
+    line, column = source.position(node)
+    text = _node_text(node)
+    type_only = _TYPE_ONLY_EXPORT.match(text.lstrip()) is not None
     specifier = _string_value(source_node)
     if specifier is None:
-        return None
-    line, column = source.position(node)
-    text = source.text[node.start_byte : node.end_byte]
-    type_only = _TYPE_ONLY_EXPORT.match(text.lstrip()) is not None
+        return RawReference(
+            reference=_node_text(source_node),
+            kind=EdgeKind.RE_EXPORT,
+            line=line,
+            column=column,
+            condition=None,
+            asset=False,
+            is_re_export=True,
+            failure_reason="module specifier cannot be decoded",
+        )
     return RawReference(
         reference=specifier,
         kind=EdgeKind.RE_EXPORT,
@@ -167,7 +184,16 @@ def _dynamic_import(node: Node, source: SourceText) -> RawReference | None:
     if first.type == "string":
         specifier = _string_value(first)
         if specifier is None:
-            return None
+            return RawReference(
+                reference=_node_text(node),
+                kind=EdgeKind.DYNAMIC_IMPORT,
+                line=line,
+                column=column,
+                condition=None,
+                asset=False,
+                is_re_export=False,
+                failure_reason="module specifier cannot be decoded",
+            )
         asset = is_asset(specifier)
         return RawReference(
             reference=specifier,
@@ -178,7 +204,7 @@ def _dynamic_import(node: Node, source: SourceText) -> RawReference | None:
             asset=asset,
             is_re_export=False,
         )
-    text = source.text[node.start_byte : node.end_byte]
+    text = _node_text(node)
     if len(text) > MAX_REFERENCE_TEXT:
         text = f"{text[:MAX_REFERENCE_TEXT]}..."
     return RawReference(
@@ -205,17 +231,81 @@ def has_asset_extension(specifier: str) -> bool:
     return posixpath.splitext(path)[1].lower() in _ASSET_EXTENSIONS
 
 
+def _node_text(node: Node) -> str:
+    raw = node.text
+    if raw is None:
+        return ""
+    return raw.decode("utf-8")
+
+
 def _string_value(node: Node) -> str | None:
-    raw_bytes = node.text
-    if raw_bytes is None:
-        return None
-    raw = raw_bytes.decode("utf-8")
+    raw = _node_text(node)
     if len(raw) < 2 or raw[0] not in "'\"" or raw[-1] != raw[0]:
         return None
-    if raw[0] == '"':
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
+    return _decode_js_string(raw[1:-1])
+
+
+def _decode_js_string(value: str) -> str | None:
+    out: list[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char != "\\":
+            out.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(value):
             return None
-        return value if isinstance(value, str) else None
-    return raw[1:-1].replace("\\'", "'").replace("\\\\", "\\")
+        escape = value[index]
+        index += 1
+        simple = {
+            "\\": "\\",
+            "'": "'",
+            '"': '"',
+            "n": "\n",
+            "t": "\t",
+            "r": "\r",
+            "b": "\b",
+            "f": "\f",
+            "v": "\v",
+            "0": "\0",
+        }
+        if escape in simple:
+            out.append(simple[escape])
+            continue
+        if escape == "\n":
+            continue
+        if escape == "\r":
+            if index < len(value) and value[index] == "\n":
+                index += 1
+            continue
+        if escape == "x":
+            digits = value[index : index + 2]
+            if len(digits) != 2 or not all(c in "0123456789abcdefABCDEF" for c in digits):
+                return None
+            out.append(chr(int(digits, 16)))
+            index += 2
+            continue
+        if escape == "u":
+            if index < len(value) and value[index] == "{":
+                end = value.find("}", index + 1)
+                if end == -1:
+                    return None
+                digits = value[index + 1 : end]
+                if not digits or not all(c in "0123456789abcdefABCDEF" for c in digits):
+                    return None
+                codepoint = int(digits, 16)
+                if codepoint > 0x10FFFF:
+                    return None
+                out.append(chr(codepoint))
+                index = end + 1
+                continue
+            digits = value[index : index + 4]
+            if len(digits) != 4 or not all(c in "0123456789abcdefABCDEF" for c in digits):
+                return None
+            out.append(chr(int(digits, 16)))
+            index += 4
+            continue
+        out.append(escape)
+    return "".join(out)

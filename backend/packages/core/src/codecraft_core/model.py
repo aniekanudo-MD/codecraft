@@ -36,6 +36,12 @@ def _omit_when_zero(value: object) -> bool:
     return value == 0
 
 
+def _omit_when_empty(value: object) -> bool:
+    """Leave an empty collection out of output."""
+
+    return value == ()
+
+
 class Language(StrEnum):
     PYTHON = "python"
     GO = "go"
@@ -197,6 +203,15 @@ class TypeScriptFileDetails(BaseModel):
     kind: TypeScriptFileKind
 
 
+class TypeScriptWorkspaceSkip(BaseModel):
+    """A workspace declaration that was not followed."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pattern: str
+    reason: str
+
+
 class GoBuildConstraint(BaseModel):
     """One build constraint as written, and which form it was written in."""
 
@@ -355,6 +370,19 @@ class Edge(BaseModel):
     resolution_path: ResolutionPath | None = Field(default=None, exclude_if=_omit_when_none)
     line: Position
     column: Position
+
+    @model_validator(mode="after")
+    def _typescript_edge_has_a_resolved_file(self) -> Self:
+        if self.kind in {
+            EdgeKind.RE_EXPORT,
+            EdgeKind.TYPE_ONLY_IMPORT,
+            EdgeKind.ASSET_IMPORT,
+        }:
+            if self.target_kind != TargetKind.FILE:
+                raise ValueError(f"{self.kind.value} edges must target a file")
+            if self.resolution_path is None:
+                raise ValueError(f"{self.kind.value} edges carry a resolution path")
+        return self
 
 
 class SymbolRecord(BaseModel):
@@ -520,11 +548,15 @@ class TypeScriptRepositoryDetails(BaseModel):
 
     The section is named once for the pair. ``config_files`` lists every nearest
     configuration file the resolver used, repository-relative and sorted.
+    ``skipped_workspaces`` records a workspace pattern that was refused.
     """
 
     model_config = ConfigDict(frozen=True)
 
     config_files: tuple[str, ...]
+    skipped_workspaces: tuple[TypeScriptWorkspaceSkip, ...] = Field(
+        default=(), exclude_if=_omit_when_empty
+    )
 
 
 class RepositoryParse(BaseModel):

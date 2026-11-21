@@ -111,7 +111,14 @@ still carries its `go` details, so the constraints and their reason stay visible
 
 A TypeScript or JavaScript node carries non-null `typescript` details. The details section
 is named once for the pair; the file record's `language` says which one it is. Python and
-Go records omit the `typescript` key entirely, so their output does not change.
+Go records omit the `typescript` key entirely, so their output does not change. A non-null
+`typescript` section is invalid on any record whose language is not `typescript` or
+`javascript`, including an excluded record.
+
+The top-level `typescript` section holds `config_files`: every nearest configuration file
+the resolver used, repository-relative and sorted. It is empty when no configuration file
+was found. It may also hold `skipped_workspaces`: each refused workspace pattern with the
+named reason it was not read. The field is omitted when empty.
 
 An asset file imported by TypeScript or JavaScript is also a node. Its `language` is null,
 `is_node` is true, `excluded_reason` is null, and it carries no language details. It is not
@@ -129,9 +136,7 @@ A reference that resolves to it is an excluded reference with the same reason.
 | `kind` | `source` or `declaration` | Source file, or declaration file such as `.d.ts`. A declaration file is a node with this kind. |
 
 A TypeScript or JavaScript file that is not a node may omit the `typescript` section. A node
-without it is invalid. The top-level `typescript` section holds `config_files`: every nearest
-configuration file the resolver used, repository-relative and sorted. It is empty when no
-configuration file was found.
+without it is invalid.
 
 ## Edge
 
@@ -473,6 +478,7 @@ The TypeScript and JavaScript parser can emit these named reasons:
 | `workspace path outside the repository` | A workspace package file or configuration path contains `..` or leaves the repository. |
 | `asset path matches no file` | An asset specifier has no file at its exact path. |
 | `non-literal dynamic import` | The argument to `import()` is not a literal string. |
+| `module specifier cannot be decoded` | A quoted module specifier contains an invalid JavaScript escape. |
 | `file has a syntax error` | A reference in a file the grammar could not read points inside the repository. |
 | `syntax error` | A file failed to parse; the position is recorded. |
 | `cannot decode source` | A file's bytes are not UTF-8; position is null. |

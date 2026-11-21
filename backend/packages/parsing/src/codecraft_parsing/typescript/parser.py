@@ -152,10 +152,18 @@ def parse_typescript_repository(
         resolver_response.typescript_version if resolver_response is not None else "unknown"
     )
     config_files = resolver_response.config_files if resolver_response is not None else ()
+    skipped_workspaces = (
+        resolver_response.skipped_workspaces if resolver_response is not None else ()
+    )
 
     return build_repository_parse(
         parser_version=parser_version(typescript_version),
-        language_details={"typescript": TypeScriptRepositoryDetails(config_files=config_files)},
+        language_details={
+            "typescript": TypeScriptRepositoryDetails(
+                config_files=config_files,
+                skipped_workspaces=skipped_workspaces,
+            )
+        },
         language_coverage_details={
             "typescript": TypeScriptCoverageDetails(
                 re_exports=outcome.re_exports_found,
@@ -284,13 +292,33 @@ def _apply_resolution(
         if has_asset_extension(path) and target.excluded_reason == _NOT_SOURCE:
             asset = _promote_asset(path, records)
             if asset is not None:
-                _add_edge(item, asset, result, outcome, kind=EdgeKind.ASSET_IMPORT)
+                if raw.is_re_export:
+                    _add_edge(
+                        item,
+                        asset,
+                        result,
+                        outcome,
+                        kind=EdgeKind.RE_EXPORT,
+                        resolution=ResolutionPath.ASSET,
+                    )
+                else:
+                    _add_edge(item, asset, result, outcome, kind=EdgeKind.ASSET_IMPORT)
                 return
         reason = target.excluded_reason or "module not found"
         outcome.excluded.append(_reference_record(item, reason))
         return
     if has_asset_extension(path):
-        _add_edge(item, target, result, outcome, kind=EdgeKind.ASSET_IMPORT)
+        if raw.is_re_export:
+            _add_edge(
+                item,
+                target,
+                result,
+                outcome,
+                kind=EdgeKind.RE_EXPORT,
+                resolution=ResolutionPath.ASSET,
+            )
+        else:
+            _add_edge(item, target, result, outcome, kind=EdgeKind.ASSET_IMPORT)
         return
     _add_edge(item, target, result, outcome, kind=raw.kind)
 

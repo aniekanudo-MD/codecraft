@@ -207,11 +207,10 @@ def test_the_schema_lists_every_field_the_model_emits() -> None:
         == set(TypeScriptFileDetails.model_fields)
         == required("typescript_file_details")
     )
-    assert (
-        fields("typescript_repository_details")
-        == set(TypeScriptRepositoryDetails.model_fields)
-        == required("typescript_repository_details")
-    )
+    assert fields("typescript_repository_details") == set(TypeScriptRepositoryDetails.model_fields)
+    assert set(required("typescript_repository_details")) == set(
+        TypeScriptRepositoryDetails.model_fields
+    ) - {"skipped_workspaces"}
     assert (
         fields("typescript_coverage_details")
         == set(TypeScriptCoverageDetails.model_fields)
@@ -513,6 +512,58 @@ def test_a_python_node_without_python_details_is_rejected() -> None:
     assert _schema_errors(document, schema) != []
     with pytest.raises(ValidationError):
         FileRecord.model_validate(document)
+
+
+def test_a_python_record_with_typescript_details_is_rejected() -> None:
+    schema = _schema_for("file_record")
+    document = cast("dict[str, object]", _file_record().model_dump(mode="json"))
+    document["typescript"] = {"kind": "source"}
+
+    assert _schema_errors(document, schema) != []
+    with pytest.raises(ValidationError):
+        FileRecord.model_validate(document)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (EdgeKind.RE_EXPORT, EdgeKind.TYPE_ONLY_IMPORT, EdgeKind.ASSET_IMPORT),
+)
+def test_typescript_edge_kinds_require_a_file_target_and_resolution_path(
+    kind: EdgeKind,
+) -> None:
+    with pytest.raises(ValidationError):
+        Edge(
+            source="a.ts",
+            target="pkg",
+            target_kind=TargetKind.PACKAGE,
+            kind=kind,
+            condition=None,
+            resolution_path=ResolutionPath.RELATIVE,
+            line=1,
+            column=1,
+        )
+    with pytest.raises(ValidationError):
+        Edge(
+            source="a.ts",
+            target="b.ts",
+            target_kind=TargetKind.FILE,
+            kind=kind,
+            condition=None,
+            line=1,
+            column=1,
+        )
+    schema = _schema_for("edge")
+    document = {
+        "source": "a.ts",
+        "target": "pkg",
+        "target_kind": "package",
+        "kind": kind.value,
+        "condition": None,
+        "alias": None,
+        "line": 1,
+        "column": 1,
+    }
+    assert _schema_errors(document, schema) != []
 
 
 def test_a_go_node_with_a_python_section_is_rejected() -> None:

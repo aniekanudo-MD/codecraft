@@ -36,6 +36,7 @@ from codecraft_core.model import (
     TypeScriptFileDetails,
     TypeScriptFileKind,
     TypeScriptRepositoryDetails,
+    TypeScriptWorkspaceSkip,
 )
 
 __all__ = [
@@ -76,4 +77,5 @@ __all__ = [
     "TypeScriptFileDetails",
     "TypeScriptFileKind",
     "TypeScriptRepositoryDetails",
+    "TypeScriptWorkspaceSkip",
 ]
